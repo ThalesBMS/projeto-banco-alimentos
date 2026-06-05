@@ -1,0 +1,5 @@
+[33m3479ec5[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m)[m feat: implementação do middleware de autenticação jwt
+[33mf1424a4[m feat: criação das rotas de registro e login com hash de senha
+[33mc0c72af[m feat: configuração do sequelize e criação dos modelos de dados (User, Doador, Alimento)
+[33m9834227[m init: estrutura inicial do projeto express e configuração de dependências
+[33md8fd916[m init: estrutura inicial do projeto express e configuração de dependências
