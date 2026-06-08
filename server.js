@@ -2,10 +2,12 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const cookieParser = require('cookie-parser');
-const { sequelize } = require('./models');
+const { sequelize, User, Doador, Alimento, ensureDatabaseSchema } = require('./models');
 
 // Importar rotas
 const authRoutes = require('./routes/authRoutes');
+const doadorRoutes = require('./routes/doadorRoutes');
+const alimentoRoutes = require('./routes/alimentoRoutes');
 
 // Importar middlewares
 const authMiddleware = require('./middlewares/authMiddleware');
@@ -25,67 +27,151 @@ app.set('views', path.join(__dirname, 'views'));
 
 // Middleware para disponibilizar usuário em todas as views
 app.use((req, res, next) => {
-  res.locals.user = req.user;
+  res.locals.user = req.user || null;
   next();
 });
 
-// Rotas públicas (sem autenticação)
+// ========== ROTAS PÚBLICAS ==========
 app.use('/', authRoutes);
 
-// Rota pública de teste
 app.get('/', (req, res) => {
-  res.send('Sistema de Banco de Alimentos - Estrutura Base OK');
+  res.redirect('/login');
 });
 
-// ========== ROTAS PROTEGIDAS (requerem autenticação) ==========
+// ========== ROTAS PROTEGIDAS ==========
 
-// Dashboard - página inicial após login
-app.get('/dashboard', authMiddleware, (req, res) => {
-  res.render('dashboard', { 
-    title: 'Dashboard',
-    currentPage: 'dashboard',
-    user: req.user
-  });
+// Rotas de Doadores (CRUD)
+app.use('/', doadorRoutes);
+
+// Rotas de Alimentos (CRUD)
+app.use('/', alimentoRoutes);
+
+// Dashboard - com estatísticas reais
+app.get('/dashboard', authMiddleware, async (req, res) => {
+  try {
+    // Buscar os números reais do banco
+    const totalDoadores = await Doador.count();
+    const totalAlimentos = await Alimento.count({ where: { status: 'disponivel' } });
+    const totalDistribuidos = await Alimento.count({ where: { status: 'distribuido' } });
+    const totalUsuarios = await User.count();
+    
+    // Buscar últimos 5 doadores
+    const ultimosDoadores = await Doador.findAll({
+      limit: 5,
+      order: [['createdAt', 'DESC']]
+    });
+    
+    // Buscar alimentos próximos ao vencimento (próximos 7 dias)
+    const hoje = new Date();
+    const semanaQueVem = new Date();
+    semanaQueVem.setDate(hoje.getDate() + 7);
+    
+    const alimentosProximos = await Alimento.findAll({
+      where: {
+        status: 'disponivel',
+        data_validade: {
+          $between: [hoje, semanaQueVem]
+        }
+      },
+      include: [{ model: Doador, as: 'Doador' }],
+      limit: 5,
+      order: [['data_validade', 'ASC']]
+    });
+    
+    res.render('dashboard', { 
+      title: 'Dashboard',
+      currentPage: 'dashboard',
+      user: req.user,
+      totalDoadores: totalDoadores,
+      totalAlimentos: totalAlimentos,
+      totalDistribuidos: totalDistribuidos,
+      totalUsuarios: totalUsuarios,
+      ultimosDoadores: ultimosDoadores,
+      alimentosProximos: alimentosProximos
+    });
+  } catch (error) {
+    console.error('Erro no dashboard:', error);
+    res.render('dashboard', { 
+      title: 'Dashboard',
+      currentPage: 'dashboard',
+      user: req.user,
+      totalDoadores: 0,
+      totalAlimentos: 0,
+      totalDistribuidos: 0,
+      totalUsuarios: 1,
+      ultimosDoadores: [],
+      alimentosProximos: []
+    });
+  }
 });
 
-// Rota de exemplo protegida para perfil do usuário
-app.get('/perfil', authMiddleware, (req, res) => {
-  res.render('perfil', { 
-    title: 'Meu Perfil',
-    currentPage: 'perfil',
-    user: req.user
-  });
+// Perfil - busca dados completos do usuário
+app.get('/perfil', authMiddleware, async (req, res) => {
+  try {
+    const userCompleto = await User.findById(req.user.id, {
+      attributes: ['id', 'name', 'email', 'role', 'createdAt']
+    });
+    
+    res.render('perfil', { 
+      title: 'Meu Perfil',
+      currentPage: 'perfil',
+      user: userCompleto
+    });
+  } catch (error) {
+    console.error('Erro ao buscar perfil:', error);
+    res.render('perfil', { 
+      title: 'Meu Perfil',
+      currentPage: 'perfil',
+      user: req.user
+    });
+  }
 });
 
-// Rota de exemplo que só admin pode acessar
-app.get('/admin-only', authMiddleware, (req, res, next) => {
-  const { isAdmin } = require('./middlewares/authMiddleware');
-  isAdmin(req, res, next);
-}, (req, res) => {
-  res.send('🎉 Área restrita para administradores! Você tem acesso especial.');
+// Usuários - área administrativa
+app.get('/usuarios', authMiddleware, authMiddleware.isAdmin, async (req, res) => {
+  try {
+    const usuarios = await User.findAll({
+      attributes: ['id', 'name', 'email', 'role', 'createdAt'],
+      order: [['createdAt', 'DESC']]
+    });
+
+    res.render('usuarios/index', {
+      title: 'Usuários',
+      currentPage: 'usuarios',
+      user: req.user,
+      usuarios
+    });
+  } catch (error) {
+    console.error('Erro ao listar usuários:', error);
+    res.status(500).send('Erro ao carregar usuários: ' + error.message);
+  }
 });
 
-// Rota de API protegida (exemplo)
+// Rota admin (exemplo)
+app.get('/admin-only', authMiddleware, authMiddleware.isAdmin, (req, res) => {
+  res.send('🎉 Área restrita para administradores!');
+});
+
+// API protegida
 app.get('/api/usuario/logado', authMiddleware, (req, res) => {
   res.json({
     success: true,
     user: {
       id: req.user.id,
+      name: req.user.name,
       email: req.user.email,
       role: req.user.role
     }
   });
 });
 
-// ========== FIM DAS ROTAS PROTEGIDAS ==========
-
-// Conectar ao banco e sincronizar
-(async () => {
+// ========== CONEXÃO COM BANCO ==========
+async function startServer() {
   try {
     await sequelize.authenticate();
     console.log('✅ Banco de dados conectado com sucesso!');
     
-    await sequelize.sync({ alter: true });
+    await ensureDatabaseSchema();
     console.log('✅ Modelos sincronizados com o banco de dados!');
     
     app.listen(PORT, () => {
@@ -94,4 +180,10 @@ app.get('/api/usuario/logado', authMiddleware, (req, res) => {
   } catch (error) {
     console.error('❌ Erro ao conectar com o banco:', error);
   }
-})();
+}
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = { app, startServer };
